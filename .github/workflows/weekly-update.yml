@@ -1,0 +1,95 @@
+name: Weekly commercial update (Friday 14:30 Spain)
+
+# Cron en UTC. Madrid = UTC+2 (verano CEST) o UTC+1 (invierno CET).
+# Para que dispare a las 14:30 hora local sea verano o invierno, programamos
+# las dos horas; el script comprueba la hora local de Madrid y solo corre una vez.
+on:
+  schedule:
+    - cron: '30 12 * * 5'   # 12:30 UTC viernes  -> 14:30 CEST (verano)
+    - cron: '30 13 * * 5'   # 13:30 UTC viernes  -> 14:30 CET  (invierno)
+  workflow_dispatch:        # botón manual en la pestaña Actions
+
+permissions:
+  contents: write           # necesario para hacer commit de los HTMLs
+
+concurrency:
+  group: weekly-update
+  cancel-in-progress: false
+
+jobs:
+  build-and-notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Skip if not 14:30 local Madrid
+        # Solo seguimos si la hora actual en Madrid es 14:xx (entre 14:00 y 14:59).
+        # Esto evita que las 2 entradas de cron (verano/invierno) ejecuten ambas.
+        run: |
+          MADRID_HOUR=$(TZ='Europe/Madrid' date +'%H')
+          echo "Madrid hour: $MADRID_HOUR"
+          if [ "$MADRID_HOUR" != "14" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "No es las 14:xx Madrid (es $MADRID_HOUR). Saltando."
+            exit 0
+          fi
+          echo "OK_TO_RUN=1" >> $GITHUB_ENV
+
+      - name: Set up Python
+        if: env.OK_TO_RUN == '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        if: env.OK_TO_RUN == '1'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Pull data from Odoo and build HTMLs
+        if: env.OK_TO_RUN == '1'
+        env:
+          ODOO_URL:      ${{ secrets.ODOO_URL }}
+          ODOO_DB:       ${{ secrets.ODOO_DB }}
+          ODOO_USER:     ${{ secrets.ODOO_USER }}
+          ODOO_PASSWORD: ${{ secrets.ODOO_PASSWORD }}
+          PAGOS_CSV_URL: ${{ secrets.PAGOS_CSV_URL }}
+        run: |
+          cd scripts
+          # 1) Bajar raw_*.json de Odoo via XML-RPC
+          python fetch_odoo.py
+          # 2) Bajar pagos_registrados.csv desde Drive (publicado como CSV)
+          python fetch_pagos.py
+          # 3) Construir dataset_base.json a partir de los raw
+          python build_dataset.py
+          # 4) Calcular tarifas históricas
+          python build_tariffs.py
+          # 5) Generar 7 HTMLs por comercial
+          python build_html.py --per-commercial
+          # 6) Mover HTMLs a la raíz del repo (donde GitHub Pages los sirve)
+          cp por_comercial/*.html ../
+          ls -la ../*.html
+
+      - name: Commit and push HTMLs
+        if: env.OK_TO_RUN == '1'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Comisiones_*.html
+          if git diff --cached --quiet; then
+            echo "No hay cambios en los HTMLs."
+          else
+            git commit -m "Weekly update $(TZ='Europe/Madrid' date +'%Y-%m-%d %H:%M')"
+            git push
+          fi
+
+      - name: Send commercial reminder emails
+        if: env.OK_TO_RUN == '1'
+        env:
+          GMAIL_USER:     ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
+          REPORT_FROM:    "apm@industrialshields.com"
+        run: |
+          cd scripts
+          python send_emails.py
