@@ -65,6 +65,8 @@ jobs:
           python build_dataset.py
           # 4) Calcular tarifas históricas
           python build_tariffs.py
+          # 4b) Aplicar parche local de UI (dropdown menu Comisiones) - idempotente
+          python patch_build_html.py
           # 5) Generar 7 HTMLs por comercial
           python build_html.py --per-commercial
           # 6) Mover HTMLs a la raíz del repo (donde GitHub Pages los sirve)
