@@ -21,6 +21,7 @@ HERE = os.path.dirname(__file__)
 
 # ─── Configuración del envío ──────────────────────────────────────────────────
 RECIPIENTS = {
+    "Albert Prieto":             "apm@industrialshields.com",
     "Eloi Davila Lopez":         "edl@industrialshields.com",
     "Gerard Montero Martínez":   "gmm@industrialshields.com",
     "Jordi Hernandez":           "jhs@industrialshields.com",
