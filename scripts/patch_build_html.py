@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Aplica el refactor de la botonera de vistas (dropdown 'Comisiones') a scripts/build_html.py.
+"""Aplica retoques de UI a scripts/build_html.py antes del build.
 
-Idempotente: si el parche ya está aplicado, no hace nada.
+Cada modificación se aplica solo si su 'marcador' aún no está presente, así
+podemos añadir nuevos parches sin romper la idempotencia.
 """
 import os, sys
 
@@ -11,14 +12,14 @@ TARGET = os.path.join(HERE, 'build_html.py')
 with open(TARGET, encoding='utf-8') as f:
     src = f.read()
 
-if 'view-menu-trigger' in src and 'initViewMenu' in src:
-    print('[patch_build_html] Ya aplicado, no hago nada.')
-    raise SystemExit(0)
+orig_len = len(src)
+applied = []
 
 # -----------------------------------------------------------------------------
 # 1) CSS: reemplazar bloque .view-switch por .view-menu (dropdown)
 # -----------------------------------------------------------------------------
-OLD_CSS = '''  .view-switch{display:flex;gap:0;border:1px solid var(--line);
+if 'view-menu-trigger' not in src:
+    OLD_CSS = '''  .view-switch{display:flex;gap:0;border:1px solid var(--line);
                border-radius:6px;overflow:hidden;background:#fff;flex-shrink:0}
   .view-switch button{
     background:#ffffff;color:var(--muted);border:0;border-right:1px solid var(--line);
@@ -30,8 +31,7 @@ OLD_CSS = '''  .view-switch{display:flex;gap:0;border:1px solid var(--line);
   .view-switch button.active{
     background:var(--accent);color:#fff;font-weight:600;
   }'''
-
-NEW_CSS = '''  .view-switch{display:flex;gap:0;flex-shrink:0}
+    NEW_CSS = '''  .view-switch{display:flex;gap:0;flex-shrink:0}
   /* Dropdown menu "Comisiones" con submenus */
   .view-menu{position:relative;display:inline-block}
   .view-menu-trigger{
@@ -63,15 +63,16 @@ NEW_CSS = '''  .view-switch{display:flex;gap:0;flex-shrink:0}
   .view-menu-panel button:last-child{border-bottom:0}
   .view-menu-panel button:hover{background:var(--bg-alt);color:var(--navy)}
   .view-menu-panel button.active{background:var(--accent-soft);color:var(--accent);font-weight:600}'''
-
-if OLD_CSS not in src:
-    sys.exit('[patch_build_html] OLD_CSS not found, abort')
-src = src.replace(OLD_CSS, NEW_CSS, 1)
+    if OLD_CSS not in src:
+        sys.exit('[patch_build_html] OLD_CSS not found, abort')
+    src = src.replace(OLD_CSS, NEW_CSS, 1)
+    applied.append('1-CSS')
 
 # -----------------------------------------------------------------------------
 # 2) HTML: reemplazar 6 botones por dropdown
 # -----------------------------------------------------------------------------
-OLD_HTML = '''  <div class="view-switch">
+if '<div class="view-menu">' not in src:
+    OLD_HTML = '''  <div class="view-switch">
     <button id="btn-view-table" class="active">Tabla</button>
     <button id="btn-view-dash">Dashboard</button>
     <button id="btn-view-comm">Comisiones</button>
@@ -79,8 +80,7 @@ OLD_HTML = '''  <div class="view-switch">
     <button id="btn-view-tariffs">Tarifas</button>
     <button id="btn-view-rules">Condiciones</button>
   </div>'''
-
-NEW_HTML = '''  <div class="view-switch">
+    NEW_HTML = '''  <div class="view-switch">
     <div class="view-menu">
       <button type="button" id="btn-view-toggle" class="view-menu-trigger" aria-haspopup="true" aria-expanded="false">
         <span class="view-menu-label">Comisiones</span>
@@ -97,22 +97,22 @@ NEW_HTML = '''  <div class="view-switch">
       </div>
     </div>
   </div>'''
-
-if OLD_HTML not in src:
-    sys.exit('[patch_build_html] OLD_HTML not found, abort')
-src = src.replace(OLD_HTML, NEW_HTML, 1)
+    if OLD_HTML not in src:
+        sys.exit('[patch_build_html] OLD_HTML not found, abort')
+    src = src.replace(OLD_HTML, NEW_HTML, 1)
+    applied.append('2-HTML')
 
 # -----------------------------------------------------------------------------
 # 3) JS: insertar bloque initViewMenu despues de los addEventListener show*
 # -----------------------------------------------------------------------------
-OLD_JS_ANCHOR = '''bT.addEventListener("click",  showTable);
+if 'initViewMenu' not in src:
+    OLD_JS_ANCHOR = '''bT.addEventListener("click",  showTable);
 bD.addEventListener("click",  showDash);
 bC.addEventListener("click",  showComm);
 bP.addEventListener("click",  showPay);
 bTa.addEventListener("click", showTariffs);
 bR.addEventListener("click",  showRules);'''
-
-NEW_JS_BLOCK = OLD_JS_ANCHOR + '''
+    NEW_JS_BLOCK = OLD_JS_ANCHOR + '''
 
 // =============================================================================
 // VIEW MENU (dropdown "Comisiones ▾ <vista actual>")
@@ -145,12 +145,40 @@ NEW_JS_BLOCK = OLD_JS_ANCHOR + '''
     });
   });
 })();'''
-
-if OLD_JS_ANCHOR not in src:
-    sys.exit('[patch_build_html] OLD_JS_ANCHOR not found, abort')
-src = src.replace(OLD_JS_ANCHOR, NEW_JS_BLOCK, 1)
+    if OLD_JS_ANCHOR not in src:
+        sys.exit('[patch_build_html] OLD_JS_ANCHOR not found, abort')
+    src = src.replace(OLD_JS_ANCHOR, NEW_JS_BLOCK, 1)
+    applied.append('3-JS-menu')
 
 # -----------------------------------------------------------------------------
-with open(TARGET, 'w', encoding='utf-8') as f:
-    f.write(src)
-print('[patch_build_html] OK - dropdown applied')
+# 4) Restringir dropdown "Comercial" a los 7 comerciales reales
+# -----------------------------------------------------------------------------
+if 'ACTIVE_COMMERCIALS_SET' not in src:
+    OLD_FILL = '''  const sps = [...new Set(DATA.map(r => r.salesperson).filter(Boolean))]
+                .filter(sp => !EXCLUDED_SP_SET.has(sp))
+                .sort((a,b)=>a.localeCompare(b,"es"));'''
+    NEW_FILL = '''  // Solo los 7 comerciales reales y actuales (Albert, Eloi, Garima, Gerard, Jordi, Josep, Ramon)
+  const ACTIVE_COMMERCIALS_SET = new Set([
+    "Albert Prieto",
+    "Eloi Davila Lopez",
+    "Garima Arora",
+    "Gerard Montero Martínez",
+    "Jordi Hernandez",
+    "Josep Massó",
+    "Ramon Boncompte",
+  ]);
+  const sps = [...new Set(DATA.map(r => r.salesperson).filter(Boolean))]
+                .filter(sp => ACTIVE_COMMERCIALS_SET.has(sp))
+                .sort((a,b)=>a.localeCompare(b,"es"));'''
+    if OLD_FILL not in src:
+        sys.exit('[patch_build_html] OLD_FILL not found, abort')
+    src = src.replace(OLD_FILL, NEW_FILL, 1)
+    applied.append('4-active-commercials')
+
+# -----------------------------------------------------------------------------
+if applied:
+    with open(TARGET, 'w', encoding='utf-8') as f:
+        f.write(src)
+    print(f'[patch_build_html] OK aplicados: {", ".join(applied)} (+{len(src)-orig_len} bytes)')
+else:
+    print('[patch_build_html] Ya aplicado todo, no hago nada.')
