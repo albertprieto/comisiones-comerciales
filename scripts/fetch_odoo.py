@@ -147,19 +147,38 @@ save('raw_partner_tags.json', {
 # 6) res.currency.rate  (FX historico)
 # =============================================================================
 print("[fetch_odoo] res.currency.rate …")
-rates = call('res.currency.rate', 'search_read',
-             [[['name', '>=', '2023-01-01']]],
+rates_raw = call('res.currency.rate', 'search_read',
+             [[['name', '>=', '2018-01-01']]],
              {'fields': ['id', 'name', 'rate', 'currency_id', 'company_id'],
               'order': 'name asc', 'limit': 100000})
+
+# Mapear currency_id (m2o) -> codigo de divisa (USD, EUR, ...)
+cur_ids = {r['currency_id'][0] for r in rates_raw if isinstance(r.get('currency_id'), list)}
+cur_map = {}
+if cur_ids:
+    currencies = call('res.currency', 'search_read', [[['id', 'in', list(cur_ids)]]],
+                      {'fields': ['id', 'name']})
+    cur_map = {c['id']: c['name'] for c in currencies}
+
+# Transformar al formato que espera build_dataset.py:
+#   {'currency': 'USD', 'date': '2024-01-01', 'rate': 1.08}
+rates = []
+for r in rates_raw:
+    cid = r.get('currency_id')
+    code = cur_map.get(cid[0]) if isinstance(cid, list) and cid else None
+    if not code: continue
+    rates.append({'currency': code, 'date': r.get('name'), 'rate': r.get('rate')})
+
 # Compañia EUR
 companies = call('res.company', 'search_read', [[]],
                  {'fields': ['id', 'currency_id'], 'limit': 5})
 company_currency = 'EUR'
 if companies:
     cur = companies[0].get('currency_id')
-    if isinstance(cur, list) and len(cur) >= 2: company_currency = cur[1]
+    if isinstance(cur, list) and len(cur) >= 2:
+        company_currency = cur_map.get(cur[0]) or cur[1]
 save('raw_fx_rates.json', {
-    '_note': 'Tasas Odoo res.currency.rate. Convención: rate = unidades extranjera por 1 EUR.',
+    '_note': 'FX rates. rate = unidades de divisa por 1 EUR. Conversion: EUR = importe_divisa / rate.',
     'company_currency': company_currency,
     'rates': rates,
 })
