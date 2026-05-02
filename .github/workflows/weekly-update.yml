@@ -7,7 +7,7 @@ on:
   schedule:
     - cron: '30 12 * * 5'   # 12:30 UTC viernes  -> 14:30 CEST (verano)
     - cron: '30 13 * * 5'   # 13:30 UTC viernes  -> 14:30 CET  (invierno)
-  workflow_dispatch:        # botón manual en la pestaña Actions
+  workflow_dispatch:        # botÃ³n manual en la pestaÃ±a Actions
 
 permissions:
   contents: write           # necesario para hacer commit de los HTMLs
@@ -63,13 +63,13 @@ jobs:
           python fetch_pagos.py
           # 3) Construir dataset_base.json a partir de los raw
           python build_dataset.py
-          # 4) Calcular tarifas históricas
+          # 4) Calcular tarifas histÃ³ricas
           python build_tariffs.py
           # 4b) Aplicar parche local de UI (dropdown menu Comisiones) - idempotente
           python patch_build_html.py
           # 5) Generar 7 HTMLs por comercial
           python build_html.py --per-commercial
-          # 6) Mover HTMLs a la raíz del repo (donde GitHub Pages los sirve)
+          # 6) Mover HTMLs a la raÃ­z del repo (donde GitHub Pages los sirve)
           cp por_comercial/*.html ../
           ls -la ../*.html
 
@@ -87,7 +87,7 @@ jobs:
           fi
 
       - name: Send commercial reminder emails
-        if: env.OK_TO_RUN == '1'
+        if: false  # TEMP SKIP — manual run sin emails 1 mayo 2026
         env:
           GMAIL_USER:     ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
