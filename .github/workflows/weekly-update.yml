@@ -87,7 +87,7 @@ jobs:
           fi
 
       - name: Send commercial reminder emails
-        if: false  # TEMP SKIP — manual run sin emails 1 mayo 2026
+        if: env.OK_TO_RUN == '1'
         env:
           GMAIL_USER:     ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
