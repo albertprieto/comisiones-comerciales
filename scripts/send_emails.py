@@ -64,6 +64,9 @@ def _commission_line(r):
         return sub * 0.03
     t = SP_TYPE.get(sp)
     if not t: return 0.0
+    # Override: Josep Massó cambia a tipo 1 desde junio 2026 (basado en date_order del pedido)
+    if sp == "Josep Massó" and (r.get('date_order') or '') >= '2026-06-01':
+        t = 1
     d = max(0, min(r.get('discount_pct') or 0, 30))
     rate = max(0, (3.6 if t==1 else 3.1) - d*0.1)
     return sub * rate / 100.0
