@@ -1684,7 +1684,7 @@ function applyFilters(rows){
       if (raw === "" || raw == null) continue;
       // Filtro sintetico por Tipo de comision del SO salesperson
       if (k === "sp_tipo"){
-        const t = salespersonType(r.salesperson);
+        const t = effectiveSalespersonType(r.salesperson, r.date_order);
         if (raw === "none" && t != null) return false;
         if (raw !== "none" && String(t) !== raw) return false;
         continue;
@@ -1746,7 +1746,7 @@ function renderRow(r){
     if (c.type==="pill") td.innerHTML = pill(v);
     else if (c.type==="ctype") td.innerHTML = ctypePill(v);
     else if (c.type==="sptipo"){
-      const t = salespersonType(r.salesperson);
+      const t = effectiveSalespersonType(r.salesperson, r.date_order);
       if (t) td.innerHTML = `<span class="chip-type t${t}">T${t}</span>`;
       else if (isExcludedSalesperson(r.salesperson))
         td.innerHTML = `<span class="chip-type tnone" title="Excluido — sin comisión">exc.</span>`;
@@ -2040,6 +2040,13 @@ function commissionRate(type, discountPct){
 function salespersonType(name){
   const e = COMMISSION_CONFIG.salespersons[name];
   return e ? e.type : null;
+}
+
+// Override por fecha: tipo efectivo de comision para una linea
+// (Josep Massó: T2 -> T1 desde 2026-06-01, basado en date_order)
+function effectiveSalespersonType(name, dateOrder){
+  if (name === "Josep Massó" && dateOrder && dateOrder >= '2026-06-01') return 1;
+  return salespersonType(name);
 }
 // ¿Esta el comercial explicitamente excluido (No Salesperson)?
 const EXCLUDED_SP_SET = new Set(COMMISSION_CONFIG.excludedSalespersons||[]);
@@ -3573,7 +3580,7 @@ function _commissionForLine(r){
   const sub = r.price_subtotal_eur || 0;
   if (cls === 'php') return sub * (COMMISSION_CONFIG.projectRule.flatRate / 100);
   // catalog
-  const t = salespersonType(sp);
+  const t = effectiveSalespersonType(sp, r.date_order);
   if (!t) return 0;
   const eff = effectiveDiscount(r);
   const rate = commissionRate(t, eff.use);
@@ -3776,6 +3783,8 @@ function renderPayments(){
     p: t.p+(r.pagado||0), pend: t.pend+(r.pendiente||0),
     ng: t.ng+r.n_gen, ni: t.ni+r.n_inv, nc: t.nc+r.n_col,
   }),{v:0,g:0,i:0,c:0,p:0,pend:0,ng:0,ni:0,nc:0});
+  // Override TOTAL Pendiente: max(0, COBRADO_total - Pagado_total). La suma por fila clampa a 0 cuando Pagado>Cobrado en un periodo, lo que infla el total. A nivel TOTAL queremos "cuanto le debo en total" (no negativo).
+  tot.pend = Math.max(0, +(tot.c - tot.p).toFixed(2));
 
   const typeChip = (t) => t ? `<span class="chip-type t${t}">T${t}</span>` : `<span class="chip-type tnone">—</span>`;
   const periodColLabel = view==='cum' ? 'Periodos incluidos' : 'Periodo';
