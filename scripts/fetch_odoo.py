@@ -102,7 +102,7 @@ for i in range(0, len(partner_ids), 500):
         'res.partner',
         [['id', 'in', chunk]],
         ['id', 'name', 'commercial_partner_id', 'country_id',
-         'category_id', 'team_id', 'user_id', 'property_product_pricelist'],
+         'category_id', 'user_id', 'property_product_pricelist'],
     ))
 save('raw_partners.json', partners)
 
