@@ -223,7 +223,6 @@ for ln in lines:
     cp = by_partner.get(comm_id) or {}
     country_id, country_name = m2o(cp.get('country_id'))
     cp_sp_id, cp_sp_name     = m2o(cp.get('user_id'))
-    cp_tm_id, cp_tm_name     = m2o(cp.get('team_id'))
     cp_pl_id, cp_pl_name     = m2o(cp.get('property_product_pricelist'))
     cp_tag_ids               = ptags_by_id.get(comm_id, [])
     cp_tag_names             = [tag_catalog.get(t, str(t)) for t in cp_tag_ids]
