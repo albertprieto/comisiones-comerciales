@@ -3654,7 +3654,7 @@ function computePayments(){
   // === FACTOR ANUAL (solo 2026+) ===
   // 1) Importe facturado por (sp, year, month) — basado en visibleData
   const _monthInvAmt = new Map();
-  for (const r of visibleData){
+  for (const r of visibleData()){
     const com = _commissionForLine(r);
     if (!com) continue;
     if (!r.last_invoice_date) continue;
