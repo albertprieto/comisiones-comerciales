@@ -8,7 +8,12 @@ Variable de entorno requerida:
 """
 import os, csv, urllib.request, io
 
-URL = os.environ.get('PAGOS_CSV_URL', '').strip()
+# Sheet ID público de "Pagos Comisiones - Industrial Shields".
+# Usamos /export?format=csv (sin caché de Google) — el sheet está compartido
+# como "Anyone with the link → Viewer". El secret PAGOS_CSV_URL (legacy /pub
+# cacheada) se ignora intencionadamente para evitar valores stale.
+SHEET_ID = os.environ.get('PAGOS_SHEET_ID', '1urDlTjSZaxcapOiXWz4GUHz9Y4MJiBFT4yP6JRJy3sI').strip()
+URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv'
 HERE = os.path.dirname(__file__)
 OUT  = os.path.join(HERE, 'pagos_registrados.csv')
 
