@@ -3675,19 +3675,45 @@ function computePayments(){
       _ytdInv.set(spy + '|' + mo, cum);
     }
   }
-  // 3) Helper: factor según anualización del YTD facturado
+  // 3) Detectar último mes con datos por (sp, year) y calcular factor del AÑO
+  //    El factor es ÚNICO por (sp, año). Se aplica retroactivamente a todos
+  //    los meses del año (no es factor por mes individual).
+  const _lastMonth = new Map();
+  for (const k of _monthInvAmt.keys()){
+    const parts = k.split('|');
+    const spy = parts[0] + '|' + parts[1];
+    const mo = parseInt(parts[2]);
+    if (!_lastMonth.has(spy) || mo > _lastMonth.get(spy)) _lastMonth.set(spy, mo);
+  }
+  const _yearFactor = new Map();
+  for (const spy of _lastMonth.keys()){
+    const lastMo = _lastMonth.get(spy);
+    const yr = parseInt(spy.split('|')[1]);
+    const ytdLast = _ytdInv.get(spy + '|' + lastMo) || 0;
+    const annualizedLast = lastMo>0 ? ytdLast*12/lastMo : 0;
+    const cfg = (typeof COMMISSION_CONFIG !== 'undefined') && COMMISSION_CONFIG.byYear && COMMISSION_CONFIG.byYear[yr];
+    const tiers = cfg && cfg.factorTiers;
+    let factor = 1.0, applies = false;
+    if (tiers && tiers.length){
+      factor = tiers[tiers.length-1].factor;
+      for (const t of tiers){ if (annualizedLast <= t.upToAnnual){ factor = t.factor; break; } }
+      applies = true;
+    }
+    _yearFactor.set(spy, { factor, applies, ytd_last: ytdLast, annualized_last: annualizedLast, last_month: lastMo });
+  }
+  // 4) Helper: retorna (factor del año, ytd del periodo, anualización lineal del periodo)
+  //    El YTD y la anualización del periodo se mantienen para mostrar en la columna
+  //    "Facturado YTD €" mes a mes (informativo). El FACTOR aplicado es siempre el del año.
   function _annualFactorInvoiced(sp, periodKey){
     const m = periodKey && periodKey.match(/^(\d{4})-(\d{2})$/);
     if (!m) return { factor: 1.0, ytd: 0, annualized: 0, applies: false };
     const yr = parseInt(m[1]), mo = parseInt(m[2]);
-    const cfg = (typeof COMMISSION_CONFIG !== 'undefined') && COMMISSION_CONFIG.byYear && COMMISSION_CONFIG.byYear[yr];
-    const tiers = cfg && cfg.factorTiers;
     const ytd = _ytdInv.get(sp + '|' + yr + '|' + mo) || 0;
     const annualized = mo>0 ? ytd*12/mo : 0;
-    if (!tiers || !tiers.length) return { factor: 1.0, ytd, annualized, applies: false };
-    let factor = tiers[tiers.length-1].factor;
-    for (const t of tiers){ if (annualized <= t.upToAnnual){ factor = t.factor; break; } }
-    return { factor, ytd, annualized, applies: true };
+    const yearInfo = _yearFactor.get(sp + '|' + yr);
+    const factor = yearInfo ? yearInfo.factor : 1.0;
+    const applies = yearInfo ? yearInfo.applies : false;
+    return { factor, ytd, annualized, applies };
   }
   // 4) Enriquecer cada bucket
   for (const b of byPair.values()){
