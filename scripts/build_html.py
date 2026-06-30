@@ -3649,6 +3649,54 @@ function computePayments(){
       }
     }
   }
+  // === FACTOR ANUAL (solo 2026+) ===
+  // 1) Importe facturado por (sp, year, month) — basado en visibleData
+  const _monthInvAmt = new Map();
+  for (const r of visibleData){
+    const com = _commissionForLine(r);
+    if (!com) continue;
+    if (!r.last_invoice_date) continue;
+    const isInv = ['invoiced','to invoice','upselling'].includes(r.invoice_status) || r.n_invoices>0;
+    if (!isInv) continue;
+    const m = String(r.last_invoice_date).slice(0,7).match(/^(\d{4})-(\d{2})$/);
+    if (!m) continue;
+    const k = r.salesperson + '|' + m[1] + '|' + parseInt(m[2]);
+    _monthInvAmt.set(k, (_monthInvAmt.get(k)||0) + (Number(r.price_subtotal_eur)||0));
+  }
+  // 2) Acumulado YTD por (sp, year, month)
+  const _ytdInv = new Map();
+  const _spYear = new Set([..._monthInvAmt.keys()].map(k => k.split('|').slice(0,2).join('|')));
+  for (const spy of _spYear){
+    let cum = 0;
+    for (let mo=1; mo<=12; mo++){
+      cum += _monthInvAmt.get(spy + '|' + mo) || 0;
+      _ytdInv.set(spy + '|' + mo, cum);
+    }
+  }
+  // 3) Helper: factor según anualización del YTD facturado
+  function _annualFactorInvoiced(sp, periodKey){
+    const m = periodKey && periodKey.match(/^(\d{4})-(\d{2})$/);
+    if (!m) return { factor: 1.0, ytd: 0, annualized: 0, applies: false };
+    const yr = parseInt(m[1]), mo = parseInt(m[2]);
+    const cfg = (typeof COMMISSION_CONFIG !== 'undefined') && COMMISSION_CONFIG.byYear && COMMISSION_CONFIG.byYear[yr];
+    const tiers = cfg && cfg.factorTiers;
+    const ytd = _ytdInv.get(sp + '|' + yr + '|' + mo) || 0;
+    const annualized = mo>0 ? ytd*12/mo : 0;
+    if (!tiers || !tiers.length) return { factor: 1.0, ytd, annualized, applies: false };
+    let factor = tiers[tiers.length-1].factor;
+    for (const t of tiers){ if (annualized <= t.upToAnnual){ factor = t.factor; break; } }
+    return { factor, ytd, annualized, applies: true };
+  }
+  // 4) Enriquecer cada bucket
+  for (const b of byPair.values()){
+    const info = _annualFactorInvoiced(b.sp, b.period);
+    b.ytd_invoiced = info.ytd;
+    b.ytd_invoiced_annualized = info.annualized;
+    b.annual_factor = info.factor;
+    b.factor_applies = info.applies;
+    b.collected_factor = (b.collected || 0) * info.factor;
+  }
+
   return { byPair, lines, periods, sps };
 }
 
@@ -3785,6 +3833,8 @@ function renderPayments(){
   }),{v:0,g:0,i:0,c:0,p:0,pend:0,ng:0,ni:0,nc:0});
   // Override TOTAL Pendiente: max(0, COBRADO_total - Pagado_total). La suma por fila clampa a 0 cuando Pagado>Cobrado en un periodo, lo que infla el total. A nivel TOTAL queremos "cuanto le debo en total" (no negativo).
   tot.pend = Math.max(0, +(tot.c - tot.p).toFixed(2));
+  // Cobrado × Factor total (suma per-row, ya cada r.collected_factor lleva su factor mensual)
+  tot.cf = displayRows.reduce((s, r) => s + (Number(r.collected_factor)||0), 0);
 
   const typeChip = (t) => t ? `<span class="chip-type t${t}">T${t}</span>` : `<span class="chip-type tnone">—</span>`;
   const periodColLabel = view==='cum' ? 'Periodos incluidos' : 'Periodo';
@@ -3805,7 +3855,10 @@ function renderPayments(){
             ${_sortHead('pay_sum','n_gen','Lns gen',{num:true})}
             ${_sortHead('pay_sum','invoiced','Facturado €',{num:true,tip:"Comisión de SOs facturados en este periodo."})}
             ${_sortHead('pay_sum','n_inv','Lns fact',{num:true})}
+            ${_sortHead('pay_sum','ytd_invoiced','Facturado YTD €',{num:true,tip:"Importe facturado YTD del comercial hasta el mes. Entre paréntesis: anualización por regla de 3 (ytd × 12/mes). Base del Factor anual."})}
+            ${_sortHead('pay_sum','annual_factor','Factor',{num:true,tip:"Factor anual aplicado a COBRADO según tabla de tiers (solo 2026+)."})}
             ${_sortHead('pay_sum','collected','COBRADO €',{num:true,tip:"Comisión que CORRESPONDE PAGAR (SO totalmente cobrado)."})}
+            ${_sortHead('pay_sum','collected_factor','Cobrado × Factor',{num:true,tip:"COBRADO × Factor anual. Importe final a pagar."})}
             ${_sortHead('pay_sum','n_col','Lns cob',{num:true})}
             ${_sortHead('pay_sum','pagado','Pagado €',{num:true,tip:"Importe ya liquidado (lectura del Sheet en Drive)."})}
             ${_sortHead('pay_sum','pendiente','Pendiente €',{num:true,tip:"COBRADO − Pagado."})}
@@ -3823,7 +3876,10 @@ function renderPayments(){
                 <td class="num muted">${r.n_gen}</td>
                 <td class="num">${fmtMoney(r.invoiced)} €</td>
                 <td class="num muted">${r.n_inv}</td>
+                <td class="num">${r.factor_applies ? `${fmtMoney(r.ytd_invoiced||0)} € <span class="muted">(${fmtMoney(r.ytd_invoiced_annualized||0)} €)</span>` : '—'}</td>
+                <td class="num">${r.factor_applies ? (r.annual_factor||1).toFixed(2) : '—'}</td>
                 <td class="num"><b style="color:#2e7d32">${fmtMoney(r.collected)} €</b></td>
+                <td class="num"><b style="color:#1a2f5c">${fmtMoney(r.collected_factor||0)} €</b></td>
                 <td class="num muted">${r.n_col}</td>
                 <td class="num">${fmtMoney(r.pagado||0)} €</td>
                 <td class="num"><b style="color:${r.pendiente>0?'#c62828':'#2e7d32'}">${fmtMoney(r.pendiente||0)} €</b></td>
@@ -3839,7 +3895,10 @@ function renderPayments(){
               <td class="num muted">${tot.ng}</td>
               <td class="num">${fmtMoney(tot.i)} €</td>
               <td class="num muted">${tot.ni}</td>
+              <td class="num muted">—</td>
+              <td class="num muted">—</td>
               <td class="num"><b style="color:#2e7d32">${fmtMoney(tot.c)} €</b></td>
+              <td class="num"><b style="color:#1a2f5c">${fmtMoney(tot.cf||0)} €</b></td>
               <td class="num muted">${tot.nc}</td>
               <td class="num">${fmtMoney(tot.p)} €</td>
               <td class="num"><b style="color:${tot.pend>0?'#c62828':'#2e7d32'}">${fmtMoney(tot.pend)} €</b></td>
