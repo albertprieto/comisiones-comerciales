@@ -3598,7 +3598,7 @@ function computePayments(){
     const k = period + "|" + sp;
     if (!byPair.has(k)) byPair.set(k, {
       period, sp, type: salespersonType(sp), generated:0, invoiced:0, collected:0,
-      ventas:0, n_gen:0, n_inv:0, n_col:0,
+      ventas:0, invoiced_amount:0, collected_amount:0, n_gen:0, n_inv:0, n_col:0,
     });
     return byPair.get(k);
   };
@@ -3626,12 +3626,14 @@ function computePayments(){
       if (isInvoiced){
         const b = get(pInv, sp);
         b.invoiced += com;
+        b.invoiced_amount += sub;
         b.n_inv += 1;
         periods.add(pInv);
       }
       if (isPaid){
         const b = get(pInv, sp);
         b.collected += com;
+        b.collected_amount += sub;
         b.n_col += 1;
         periods.add(pInv);
         // Para detalle por linea
@@ -3835,6 +3837,7 @@ function renderPayments(){
   tot.pend = Math.max(0, +(tot.c - tot.p).toFixed(2));
   // Cobrado × Factor total (suma per-row, ya cada r.collected_factor lleva su factor mensual)
   tot.cf = displayRows.reduce((s, r) => s + (Number(r.collected_factor)||0), 0);
+  tot.ia = displayRows.reduce((s, r) => s + (Number(r.invoiced_amount)||0), 0);
 
   const typeChip = (t) => t ? `<span class="chip-type t${t}">T${t}</span>` : `<span class="chip-type tnone">—</span>`;
   const periodColLabel = view==='cum' ? 'Periodos incluidos' : 'Periodo';
@@ -3850,20 +3853,14 @@ function renderPayments(){
             ${_sortHead('pay_sum','_periodOrd',periodColLabel,{defaultDir:1,tip:"2025-Q3 / 2025-Q4 trimestrales · 2026-MM mensuales."})}
             ${_sortHead('pay_sum','sp','Comercial',{defaultDir:1})}
             ${_sortHead('pay_sum','type','Tipo',{defaultDir:1})}
-            ${_sortHead('pay_sum','ventas','Ventas €',{num:true,tip:"Volumen de venta comisionable. Excluye Shipping y Controllino."})}
-            ${_sortHead('pay_sum','generated','Generado €',{num:true,tip:"Comisión generada por SOs confirmadas en este periodo."})}
-            ${_sortHead('pay_sum','n_gen','Lns gen',{num:true})}
-            ${_sortHead('pay_sum','invoiced','Facturado €',{num:true,tip:"Comisión de SOs facturados en este periodo."})}
-            ${_sortHead('pay_sum','n_inv','Lns fact',{num:true})}
-            ${_sortHead('pay_sum','ytd_invoiced','Facturado YTD €',{num:true,tip:"Importe facturado YTD del comercial hasta el mes. Entre paréntesis: anualización por regla de 3 (ytd × 12/mes). Base del Factor anual."})}
-            ${_sortHead('pay_sum','annual_factor','Factor',{num:true,tip:"Factor anual aplicado a COBRADO según tabla de tiers (solo 2026+)."})}
-            ${_sortHead('pay_sum','collected','COBRADO €',{num:true,tip:"Comisión que CORRESPONDE PAGAR (SO totalmente cobrado)."})}
-            ${_sortHead('pay_sum','collected_factor','Cobrado × Factor',{num:true,tip:"COBRADO × Factor anual. Importe final a pagar."})}
-            ${_sortHead('pay_sum','n_col','Lns cob',{num:true})}
-            ${_sortHead('pay_sum','pagado','Pagado €',{num:true,tip:"Importe ya liquidado (lectura del Sheet en Drive)."})}
-            ${_sortHead('pay_sum','pendiente','Pendiente €',{num:true,tip:"COBRADO − Pagado."})}
-            ${_sortHead('pay_sum','fecha_pago','Fecha pago',{defaultDir:-1})}
-            <th>Notas</th>
+            ${_sortHead('pay_sum','ventas','Ventas €',{num:true,tip:"Importe de ventas comisionables del periodo. Excluye Shipping y Controllino. No es comisión."})}
+            ${_sortHead('pay_sum','invoiced_amount','Facturado €',{num:true,tip:"Importe vendido ya FACTURADO en este periodo. Excluye Shipping y Controllino. No es comisión."})}
+            ${_sortHead('pay_sum','ytd_invoiced','Facturado YTD €',{num:true,tip:"Importe facturado YTD hasta este mes. Entre paréntesis: anualización lineal (ytd × 12/mes). Es la base del Factor anual."})}
+            ${_sortHead('pay_sum','generated','Com. Generado €',{num:true,tip:"Comisión generada por SOs confirmadas en este periodo."})}
+            ${_sortHead('pay_sum','invoiced','Com. Facturado €',{num:true,tip:"Comisión sobre los SOs ya facturados en este periodo."})}
+            ${_sortHead('pay_sum','collected','Com. Fact. Cobradas €',{num:true,tip:"Comisión sobre SOs totalmente cobrados (corresponde pagar)."})}
+            ${_sortHead('pay_sum','collected_factor','Com.Fact.Cobr × Factor',{num:true,tip:"Com. Fact. Cobradas × Factor anual. Solo aplica 2026+. Importe final a liquidar."})}
+            ${_sortHead('pay_sum','pagado','Pagado €',{num:true,tip:"Importe ya liquidado al comercial (lectura del Sheet en Drive)."})}
           </tr></thead>
           <tbody>
             ${displayRows.map(r => `
@@ -3872,37 +3869,27 @@ function renderPayments(){
                 <td>${escapeHtml(r.sp)}</td>
                 <td>${typeChip(r.type)}</td>
                 <td class="num">${fmtMoney(r.ventas||0)} €</td>
-                <td class="num">${fmtMoney(r.generated)} €</td>
-                <td class="num muted">${r.n_gen}</td>
-                <td class="num">${fmtMoney(r.invoiced)} €</td>
-                <td class="num muted">${r.n_inv}</td>
+                <td class="num">${fmtMoney(r.invoiced_amount||0)} €</td>
                 <td class="num">${r.factor_applies ? `${fmtMoney(r.ytd_invoiced||0)} € <span class="muted">(${fmtMoney(r.ytd_invoiced_annualized||0)} €)</span>` : '—'}</td>
-                <td class="num">${r.factor_applies ? (r.annual_factor||1).toFixed(2) : '—'}</td>
+                <td class="num">${fmtMoney(r.generated)} €</td>
+                <td class="num">${fmtMoney(r.invoiced)} €</td>
                 <td class="num"><b style="color:#2e7d32">${fmtMoney(r.collected)} €</b></td>
                 <td class="num"><b style="color:#1a2f5c">${fmtMoney(r.collected_factor||0)} €</b></td>
-                <td class="num muted">${r.n_col}</td>
-                <td class="num">${fmtMoney(r.pagado||0)} €</td>
-                <td class="num"><b style="color:${r.pendiente>0?'#c62828':'#2e7d32'}">${fmtMoney(r.pendiente||0)} €</b></td>
-                <td>${escapeHtml(r.fecha_pago||"")}</td>
-                <td class="muted" style="max-width:200px;font-size:11px">${escapeHtml(r.notas||"")}</td>
-              </tr>`).join("")}
+                <td class="num">${fmtMoney(r.pagado)} €</td>
+              </tr>
+            `).join('')}
           </tbody>
           <tfoot>
             <tr style="border-top:2px solid var(--accent);font-weight:600">
               <td colspan="3">TOTAL</td>
               <td class="num"><b>${fmtMoney(tot.v)} €</b></td>
+              <td class="num"><b>${fmtMoney(tot.ia||0)} €</b></td>
+              <td class="num muted">—</td>
               <td class="num">${fmtMoney(tot.g)} €</td>
-              <td class="num muted">${tot.ng}</td>
               <td class="num">${fmtMoney(tot.i)} €</td>
-              <td class="num muted">${tot.ni}</td>
-              <td class="num muted">—</td>
-              <td class="num muted">—</td>
               <td class="num"><b style="color:#2e7d32">${fmtMoney(tot.c)} €</b></td>
               <td class="num"><b style="color:#1a2f5c">${fmtMoney(tot.cf||0)} €</b></td>
-              <td class="num muted">${tot.nc}</td>
               <td class="num">${fmtMoney(tot.p)} €</td>
-              <td class="num"><b style="color:${tot.pend>0?'#c62828':'#2e7d32'}">${fmtMoney(tot.pend)} €</b></td>
-              <td colspan="2"></td>
             </tr>
           </tfoot>
         </table>
