@@ -210,6 +210,7 @@ for i in range(0, len(inv_ids), 500):
                           [chunk], {'fields': ['id', 'name', 'move_type', 'state',
                                                 'payment_state', 'invoice_date',
                                                 'invoice_origin',
+                                                'amount_untaxed_signed',
                                                 'amount_total_signed',
                                                 'amount_residual_signed']}))
 save('raw_invoices.json', invoices)
