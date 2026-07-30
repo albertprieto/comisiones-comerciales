@@ -381,6 +381,8 @@ for ln in lines:
         'n_invoices':         inv_agg.get('n_invoices') or 0,
         'invoice_names':      inv_agg.get('invoice_names') or [],
         'last_invoice_date':  inv_agg.get('last_invoice_date'),
+        'invoiced_by_month':  inv_agg.get('invoiced_by_month') or {},
+        'invoiced_net_total': inv_agg.get('invoiced_net_total') or 0.0,
     })
 
 # Filtrar outliers evidentes (datos de prueba en drafts: subtotales > 10M€)
