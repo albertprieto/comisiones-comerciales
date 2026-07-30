@@ -66,6 +66,7 @@ jobs:
           fi
 
       - name: Send commercial reminder emails
+        if: false  # TEMP: regenerar HTML sin emails
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
