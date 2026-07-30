@@ -84,19 +84,43 @@ def so_invoice_agg(order_id):
         else:
             ps = 'not_paid'
 
-    invs_sorted = sorted(posted_out + posted_refund, key=lambda i: i.get('invoice_date') or '')
-    names = [i.get('name') for i in invs_sorted if i.get('name')]
-    last_date = invs_sorted[-1]['invoice_date'] if invs_sorted else None
+    # last_invoice_date: SOLO facturas (out_invoice). Los abonos NO deben
+    # re-fechar el pedido: un abono de regularizacion arrastraba pedidos
+    # enteros de meses anteriores al mes del abono.
+    invs_out_sorted = sorted(posted_out, key=lambda i: i.get('invoice_date') or '')
+    names = [i.get('name') for i in sorted(posted_out + posted_refund,
+                                           key=lambda i: i.get('invoice_date') or '') if i.get('name')]
+    last_date = invs_out_sorted[-1]['invoice_date'] if invs_out_sorted else None
+
+    # Desglose mensual NETO (facturas menos abonos) en base SIN IVA.
+    # Cada documento se imputa a SU PROPIO mes: un abono emitido meses
+    # despues resta en el mes del abono, no en el de la factura original.
+    def _amt_untaxed(i):
+        v = i.get('amount_untaxed_signed')
+        if v is None:
+            v = i.get('amount_total_signed') or 0
+        return v or 0
+
+    by_month = {}
+    for i in (posted_out + posted_refund):
+        d = i.get('invoice_date') or ''
+        if len(d) < 7:
+            continue
+        mk = d[:7]
+        by_month[mk] = round(by_month.get(mk, 0.0) + _amt_untaxed(i), 2)
+    net_total = round(sum(by_month.values()), 2)
 
     return {
-        'invoice_status':    inv_status,
-        'n_invoices':        len(posted_out),
-        'invoiced_amount':   round(sum((i.get('amount_total_signed') or 0) for i in posted_out), 2),
-        'residual_amount':   round(sum((i.get('amount_residual_signed') or 0) for i in posted_out), 2),
-        'refunded_amount':   round(abs(sum((i.get('amount_total_signed') or 0) for i in posted_refund)), 2),
-        'payment_state_agg': ps,
-        'invoice_names':     names,
-        'last_invoice_date': last_date,
+        'invoice_status':     inv_status,
+        'n_invoices':         len(posted_out),
+        'invoiced_amount':    round(sum((i.get('amount_total_signed') or 0) for i in posted_out), 2),
+        'residual_amount':    round(sum((i.get('amount_residual_signed') or 0) for i in posted_out), 2),
+        'refunded_amount':    round(abs(sum((i.get('amount_total_signed') or 0) for i in posted_refund)), 2),
+        'payment_state_agg':  ps,
+        'invoice_names':      names,
+        'last_invoice_date':  last_date,
+        'invoiced_by_month':  by_month,
+        'invoiced_net_total': net_total,
     }
 
 tag_catalog = {int(k): v for k, v in partner_tags['tag_catalog'].items()}
