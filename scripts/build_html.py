@@ -130,7 +130,7 @@ def _commission_line(r):
     nm  = r.get('product_name') or ''
     code = r.get('product_code') or ''
     if 'Shipping' in cat or 'Shipping' in nm: return 0.0
-    if 'Controllino' in cat: return 0.0
+    if 'Controllino' in cat and (r.get('date_order') or '')[:10] < '2026-05-01': return 0.0
     sub = r.get('price_subtotal_eur') or 0.0
     if code.startswith('PHP-') or 'Projects' in cat:
         return sub * 0.03
@@ -3576,7 +3576,9 @@ function _commissionForLine(r){
   const sp = r.salesperson;
   if (!sp || isExcludedSalesperson(sp)) return 0;
   const cls = classifyLineForCommission(r);
-  if (cls === 'shipping' || cls === 'controllino') return 0;
+  if (cls === 'shipping') return 0;
+  // Controllino: excluido hasta abril 2026. Desde 2026-05-01 (fecha de PEDIDO) si comisiona.
+  if (cls === 'controllino' && !_controllinoCommissionable(r)) return 0;
   const sub = r.price_subtotal_eur || 0;
   if (cls === 'php') return sub * (COMMISSION_CONFIG.projectRule.flatRate / 100);
   // catalog
@@ -3585,6 +3587,46 @@ function _commissionForLine(r){
   const eff = effectiveDiscount(r);
   const rate = commissionRate(t, eff.use);
   return sub * (rate / 100);
+}
+
+// Controllino deja de excluirse a partir de 2026-05-01, por FECHA DE PEDIDO.
+function _controllinoCommissionable(r){
+  const d = r && r.date_order ? String(r.date_order).slice(0,10) : '';
+  return d >= '2026-05-01';
+}
+// Una linea entra en la base comisionable? (mismo criterio que _commissionForLine,
+// pero sin mirar el importe: una linea con descuento tope sigue siendo base).
+function _isCommissionableLine(r){
+  if (!r || r.is_section || r.state !== 'sale') return false;
+  const sp = r.salesperson;
+  if (!sp || isExcludedSalesperson(sp)) return false;
+  const cls = classifyLineForCommission(r);
+  if (cls === 'shipping') return false;
+  if (cls === 'controllino' && !_controllinoCommissionable(r)) return false;
+  return true;
+}
+// Agregado por PEDIDO: peso comisionable + desglose de facturacion neta.
+// Se calcula una vez sobre DATA completo (no depende de filtros) y se cachea.
+let _ORDER_AGG_CACHE = null;
+function _orderAgg(){
+  if (_ORDER_AGG_CACHE) return _ORDER_AGG_CACHE;
+  const mp = new Map();
+  for (const r of DATA){
+    if (!r || r.is_section || r.state !== 'sale') continue;
+    const on = r.order_name; if (!on) continue;
+    let o = mp.get(on);
+    if (!o){
+      o = { sp: r.salesperson, date_order: r.date_order, total: 0, comm: 0,
+            byMonth: r.invoiced_by_month || {},
+            netTotal: Number(r.invoiced_net_total) || 0 };
+      mp.set(on, o);
+    }
+    const sub = Number(r.price_subtotal_eur) || 0;
+    o.total += sub;
+    if (_isCommissionableLine(r)) o.comm += sub;
+  }
+  _ORDER_AGG_CACHE = mp;
+  return mp;
 }
 
 function computePayments(){
@@ -3598,7 +3640,9 @@ function computePayments(){
     const k = period + "|" + sp;
     if (!byPair.has(k)) byPair.set(k, {
       period, sp, type: salespersonType(sp), generated:0, invoiced:0, collected:0,
-      ventas:0, invoiced_amount:0, collected_amount:0, n_gen:0, n_inv:0, n_col:0,
+      ventas:0, invoiced_amount:0, collected_amount:0,
+      invoiced_month_amt:0, order_invoiced_amt:0,
+      n_gen:0, n_inv:0, n_col:0,
     });
     return byPair.get(k);
   };
@@ -3651,21 +3695,39 @@ function computePayments(){
       }
     }
   }
-  // === FACTOR ANUAL (solo 2026+) ===
-  // 1) Importe facturado por (sp, year, month) — basado en visibleData
-  const _monthInvAmt = new Map();
-  for (const r of visibleData()){
-    const com = _commissionForLine(r);
-    if (!com) continue;
-    if (!r.last_invoice_date) continue;
-    const isInv = ['invoiced','to invoice','upselling'].includes(r.invoice_status) || r.n_invoices>0;
-    if (!isInv) continue;
-    const m = String(r.last_invoice_date).slice(0,7).match(/^(\d{4})-(\d{2})$/);
-    if (!m) continue;
-    const k = r.salesperson + '|' + m[1] + '|' + parseInt(m[2]);
-    _monthInvAmt.set(k, (_monthInvAmt.get(k)||0) + (Number(r.price_subtotal_eur)||0));
+  // === IMPORTES DE FACTURACION (netos de abonos) + FACTOR ANUAL ===
+  // Todo se prorratea al peso comisionable del pedido: mismo criterio que
+  // Ventas (fuera Shipping; fuera Controllino hasta abril 2026).
+  const _agg = _orderAgg();
+  const _visOrders = new Set();
+  for (const r of visibleData()){ if (r && r.order_name) _visOrders.add(r.order_name); }
+
+  const _monthInvAmt = new Map();   // sp|YYYY|M -> neto comisionable facturado ese mes
+  for (const on of _visOrders){
+    const o = _agg.get(on); if (!o || !o.sp) continue;
+    const ratio = o.total > 0 ? (o.comm / o.total) : 0;
+    if (ratio <= 0) continue;
+    // (a) Facturado del mes: cada factura y cada abono en SU PROPIO mes.
+    for (const mk in (o.byMonth || {})){
+      const amt = (Number(o.byMonth[mk]) || 0) * ratio;
+      const per = _periodForPayment(mk + '-15');
+      if (per){ const b = get(per, o.sp); b.invoiced_month_amt += amt; periods.add(per); }
+      const mm = mk.match(/^(\d{4})-(\d{2})$/);
+      if (mm){
+        const k = o.sp + '|' + mm[1] + '|' + parseInt(mm[2]);
+        _monthInvAmt.set(k, (_monthInvAmt.get(k) || 0) + amt);
+      }
+    }
+    // (b) Importe del PEDIDO ya facturado, imputado al mes del PEDIDO.
+    const pGenO = _periodForPayment(o.date_order);
+    if (pGenO){
+      const b = get(pGenO, o.sp);
+      b.order_invoiced_amt += (Number(o.netTotal) || 0) * ratio;
+      periods.add(pGenO);
+    }
   }
-  // 2) Acumulado YTD por (sp, year, month)
+
+  // Acumulado YTD por (sp, year, month)
   const _ytdInv = new Map();
   const _spYear = new Set([..._monthInvAmt.keys()].map(k => k.split('|').slice(0,2).join('|')));
   for (const spy of _spYear){
@@ -3675,14 +3737,13 @@ function computePayments(){
       _ytdInv.set(spy + '|' + mo, cum);
     }
   }
-  // 3) Detectar último mes con datos por (sp, year) y calcular factor del AÑO
-  //    El factor es ÚNICO por (sp, año). Se aplica retroactivamente a todos
-  //    los meses del año (no es factor por mes individual).
+
+  // Factor UNICO por (sp, anio), calculado con el ultimo mes con datos.
   const _lastMonth = new Map();
   for (const k of _monthInvAmt.keys()){
-    const parts = k.split('|');
-    const spy = parts[0] + '|' + parts[1];
-    const mo = parseInt(parts[2]);
+    const p = k.split('|');
+    const spy = p[0] + '|' + p[1];
+    const mo = parseInt(p[2]);
     if (!_lastMonth.has(spy) || mo > _lastMonth.get(spy)) _lastMonth.set(spy, mo);
   }
   const _yearFactor = new Map();
@@ -3699,23 +3760,19 @@ function computePayments(){
       for (const t of tiers){ if (annualizedLast <= t.upToAnnual){ factor = t.factor; break; } }
       applies = true;
     }
-    _yearFactor.set(spy, { factor, applies, ytd_last: ytdLast, annualized_last: annualizedLast, last_month: lastMo });
+    _yearFactor.set(spy, { factor, applies });
   }
-  // 4) Helper: retorna (factor del año, ytd del periodo, anualización lineal del periodo)
-  //    El YTD y la anualización del periodo se mantienen para mostrar en la columna
-  //    "Facturado YTD €" mes a mes (informativo). El FACTOR aplicado es siempre el del año.
+
   function _annualFactorInvoiced(sp, periodKey){
-    const m = periodKey && periodKey.match(/^(\d{4})-(\d{2})$/);
-    if (!m) return { factor: 1.0, ytd: 0, annualized: 0, applies: false };
-    const yr = parseInt(m[1]), mo = parseInt(m[2]);
+    const mm = periodKey && periodKey.match(/^(\d{4})-(\d{2})$/);
+    if (!mm) return { factor: 1.0, ytd: 0, annualized: 0, applies: false };
+    const yr = parseInt(mm[1]), mo = parseInt(mm[2]);
     const ytd = _ytdInv.get(sp + '|' + yr + '|' + mo) || 0;
     const annualized = mo>0 ? ytd*12/mo : 0;
-    const yearInfo = _yearFactor.get(sp + '|' + yr);
-    const factor = yearInfo ? yearInfo.factor : 1.0;
-    const applies = yearInfo ? yearInfo.applies : false;
-    return { factor, ytd, annualized, applies };
+    const yi = _yearFactor.get(sp + '|' + yr);
+    return { factor: yi ? yi.factor : 1.0, ytd, annualized, applies: yi ? yi.applies : false };
   }
-  // 4) Enriquecer cada bucket
+
   for (const b of byPair.values()){
     const info = _annualFactorInvoiced(b.sp, b.period);
     b.ytd_invoiced = info.ytd;
@@ -3829,10 +3886,13 @@ function renderPayments(){
       if (!byS.has(r.sp)) byS.set(r.sp, {
         sp: r.sp, type: r.type, period: '', periodList: new Set(),
         generated:0, invoiced:0, collected:0, ventas:0,
+        invoiced_month_amt:0, order_invoiced_amt:0,
         pagado:0, pendiente:0, n_gen:0, n_inv:0, n_col:0,
         fecha_pago:'', notas:'',
       });
       const a = byS.get(r.sp);
+      a.invoiced_month_amt += (r.invoiced_month_amt || 0);
+      a.order_invoiced_amt += (r.order_invoiced_amt || 0);
       a.generated += r.generated; a.invoiced += r.invoiced; a.collected += r.collected;
       a.ventas    += r.ventas    || 0;
       a.pagado    += r.pagado    || 0;
@@ -3863,7 +3923,8 @@ function renderPayments(){
   tot.pend = Math.max(0, +(tot.c - tot.p).toFixed(2));
   // Cobrado × Factor total (suma per-row, ya cada r.collected_factor lleva su factor mensual)
   tot.cf = displayRows.reduce((s, r) => s + (Number(r.collected_factor)||0), 0);
-  tot.ia = displayRows.reduce((s, r) => s + (Number(r.invoiced_amount)||0), 0);
+  tot.ima = displayRows.reduce((s, r) => s + (Number(r.invoiced_month_amt)||0), 0);
+  tot.oia = displayRows.reduce((s, r) => s + (Number(r.order_invoiced_amt)||0), 0);
 
   const typeChip = (t) => t ? `<span class="chip-type t${t}">T${t}</span>` : `<span class="chip-type tnone">—</span>`;
   const periodColLabel = view==='cum' ? 'Periodos incluidos' : 'Periodo';
@@ -3876,17 +3937,18 @@ function renderPayments(){
       <div style="max-height:600px;overflow:auto">
         <table class="tbl-sum" style="width:100%;min-width:1500px">
           <thead><tr>
-            ${_sortHead('pay_sum','_periodOrd',periodColLabel,{defaultDir:1,tip:"2025-Q3 / 2025-Q4 trimestrales · 2026-MM mensuales."})}
+            ${_sortHead('pay_sum','_periodOrd',periodColLabel,{defaultDir:1,tip:"2025-Q3 / 2025-Q4 trimestrales \u00b7 2026-MM mensuales."})}
             ${_sortHead('pay_sum','sp','Comercial',{defaultDir:1})}
             ${_sortHead('pay_sum','type','Tipo',{defaultDir:1})}
-            ${_sortHead('pay_sum','ventas','Ventas €',{num:true,tip:"Importe de ventas comisionables del periodo. Excluye Shipping y Controllino. No es comisión."})}
-            ${_sortHead('pay_sum','invoiced_amount','Facturado €',{num:true,tip:"Importe vendido ya FACTURADO en este periodo. Excluye Shipping y Controllino. No es comisión."})}
-            ${_sortHead('pay_sum','ytd_invoiced','Facturado YTD €',{num:true,tip:"Importe facturado YTD hasta este mes. Entre paréntesis: anualización lineal (ytd × 12/mes). Es la base del Factor anual."})}
-            ${_sortHead('pay_sum','generated','Com. Generado €',{num:true,tip:"Comisión generada por SOs confirmadas en este periodo."})}
-            ${_sortHead('pay_sum','invoiced','Com. Facturado €',{num:true,tip:"Comisión sobre los SOs ya facturados en este periodo."})}
-            ${_sortHead('pay_sum','collected','Com. Fact. Cobradas €',{num:true,tip:"Comisión sobre SOs totalmente cobrados (corresponde pagar)."})}
-            ${_sortHead('pay_sum','collected_factor','Com.Fact.Cobr × Factor',{num:true,tip:"Com. Fact. Cobradas × Factor anual. Solo aplica 2026+. Importe final a liquidar."})}
-            ${_sortHead('pay_sum','pagado','Pagado €',{num:true,tip:"Importe ya liquidado al comercial (lectura del Sheet en Drive)."})}
+            ${_sortHead('pay_sum','ventas','Ventas \u20ac',{num:true,tip:"Importe de PEDIDOS comisionables entrados este mes (por fecha de pedido). Excluye Shipping; excluye Controllino hasta abril 2026."})}
+            ${_sortHead('pay_sum','invoiced_month_amt','Facturado \u20ac (mes)',{num:true,tip:"Facturaci\u00f3n NETA emitida DURANTE este mes (facturas menos abonos), venga de pedidos de cualquier mes. Un abono emitido m\u00e1s tarde resta en el mes del abono."})}
+            ${_sortHead('pay_sum','order_invoiced_amt','Imp. pedido facturado \u20ac',{num:true,tip:"De los PEDIDOS entrados este mes, cu\u00e1nto se ha facturado ya (neto de abonos, acumulado a hoy). Se actualiza solo. Nunca deber\u00eda superar Ventas \u20ac."})}
+            ${_sortHead('pay_sum','ytd_invoiced','Facturado YTD \u20ac',{num:true,tip:"Facturaci\u00f3n neta acumulada del a\u00f1o hasta este mes. Entre par\u00e9ntesis: anualizaci\u00f3n lineal (YTD \u00d7 12/mes). Base del Factor anual."})}
+            ${_sortHead('pay_sum','generated','Com. Generado \u20ac',{num:true,tip:"Comisi\u00f3n de los pedidos confirmados este mes (por fecha de pedido)."})}
+            ${_sortHead('pay_sum','invoiced','Com. Facturado \u20ac',{num:true,tip:"Comisi\u00f3n de las l\u00edneas facturadas en este mes (por fecha de factura)."})}
+            ${_sortHead('pay_sum','collected','Com. Fact. Cobradas \u20ac',{num:true,tip:"Comisi\u00f3n de las l\u00edneas facturadas Y cobradas. Es lo que corresponde pagar."})}
+            ${_sortHead('pay_sum','collected_factor','Com.Fact.Cobr \u00d7 Factor',{num:true,tip:"Com. Fact. Cobradas \u00d7 Factor anual. Importe final a liquidar."})}
+            ${_sortHead('pay_sum','pagado','Pagado \u20ac',{num:true,tip:"Importe ya liquidado al comercial (hoja de Drive)."})}
           </tr></thead>
           <tbody>
             ${displayRows.map(r => `
@@ -3894,28 +3956,30 @@ function renderPayments(){
                 <td><b>${escapeHtml(r.period)}</b></td>
                 <td>${escapeHtml(r.sp)}</td>
                 <td>${typeChip(r.type)}</td>
-                <td class="num">${fmtMoney(r.ventas||0)} €</td>
-                <td class="num">${fmtMoney(r.invoiced_amount||0)} €</td>
-                <td class="num">${r.factor_applies ? `${fmtMoney(r.ytd_invoiced||0)} € <span class="muted">(${fmtMoney(r.ytd_invoiced_annualized||0)} €)</span>` : '—'}</td>
-                <td class="num">${fmtMoney(r.generated)} €</td>
-                <td class="num">${fmtMoney(r.invoiced)} €</td>
-                <td class="num"><b style="color:#2e7d32">${fmtMoney(r.collected)} €</b></td>
-                <td class="num"><b style="color:#1a2f5c">${fmtMoney(r.collected_factor||0)} €</b></td>
-                <td class="num">${fmtMoney(r.pagado)} €</td>
+                <td class="num">${fmtMoney(r.ventas||0)} \u20ac</td>
+                <td class="num">${fmtMoney(r.invoiced_month_amt||0)} \u20ac</td>
+                <td class="num">${fmtMoney(r.order_invoiced_amt||0)} \u20ac</td>
+                <td class="num">${r.factor_applies ? `${fmtMoney(r.ytd_invoiced||0)} \u20ac <span class="muted">(${fmtMoney(r.ytd_invoiced_annualized||0)} \u20ac)</span>` : '\u2014'}</td>
+                <td class="num">${fmtMoney(r.generated)} \u20ac</td>
+                <td class="num">${fmtMoney(r.invoiced)} \u20ac</td>
+                <td class="num"><b style="color:#2e7d32">${fmtMoney(r.collected)} \u20ac</b></td>
+                <td class="num"><b style="color:#1a2f5c">${fmtMoney(r.collected_factor||0)} \u20ac</b></td>
+                <td class="num">${fmtMoney(r.pagado)} \u20ac</td>
               </tr>
             `).join('')}
           </tbody>
           <tfoot>
             <tr style="border-top:2px solid var(--accent);font-weight:600">
               <td colspan="3">TOTAL</td>
-              <td class="num"><b>${fmtMoney(tot.v)} €</b></td>
-              <td class="num"><b>${fmtMoney(tot.ia||0)} €</b></td>
-              <td class="num muted">—</td>
-              <td class="num">${fmtMoney(tot.g)} €</td>
-              <td class="num">${fmtMoney(tot.i)} €</td>
-              <td class="num"><b style="color:#2e7d32">${fmtMoney(tot.c)} €</b></td>
-              <td class="num"><b style="color:#1a2f5c">${fmtMoney(tot.cf||0)} €</b></td>
-              <td class="num">${fmtMoney(tot.p)} €</td>
+              <td class="num"><b>${fmtMoney(tot.v)} \u20ac</b></td>
+              <td class="num"><b>${fmtMoney(tot.ima||0)} \u20ac</b></td>
+              <td class="num"><b>${fmtMoney(tot.oia||0)} \u20ac</b></td>
+              <td class="num muted">\u2014</td>
+              <td class="num">${fmtMoney(tot.g)} \u20ac</td>
+              <td class="num">${fmtMoney(tot.i)} \u20ac</td>
+              <td class="num"><b style="color:#2e7d32">${fmtMoney(tot.c)} \u20ac</b></td>
+              <td class="num"><b style="color:#1a2f5c">${fmtMoney(tot.cf||0)} \u20ac</b></td>
+              <td class="num">${fmtMoney(tot.p)} \u20ac</td>
             </tr>
           </tfoot>
         </table>
